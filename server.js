@@ -1,4 +1,4 @@
-// server.js - Complete Express server for Rabbit Kindling Tracker
+// server.js - Rabbit Kindling Tracker with License Key System
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
@@ -9,6 +9,7 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin-password-change-this';
 
 // Middleware
 app.use(express.json());
@@ -20,13 +21,27 @@ const db = new sqlite3.Database('./rabbit_tracker.db');
 
 // Create tables
 db.serialize(() => {
-  // Users table
+  // Users table with license_key field
   db.run(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT UNIQUE NOT NULL,
       password TEXT NOT NULL,
+      license_key TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // License keys table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS license_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT UNIQUE NOT NULL,
+      email TEXT,
+      used BOOLEAN DEFAULT 0,
+      used_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      notes TEXT
     )
   `);
 
@@ -48,20 +63,6 @@ db.serialize(() => {
   `);
 });
 
-// Helper function to get the spreadsheet
-function getSpreadsheet() {
-  try {
-    // First try to get the active spreadsheet (for bound scripts)
-    return SpreadsheetApp.getActiveSpreadsheet();
-  } catch (e) {
-    // If that fails, try to open by ID
-    if (SHEET_ID && SHEET_ID !== 'YOUR_GOOGLE_SHEETS_ID_HERE') {
-      return SpreadsheetApp.openById(SHEET_ID);
-    }
-    throw new Error('Could not access spreadsheet. Please ensure the script is bound to a spreadsheet or provide a valid SHEET_ID.');
-  }
-}
-
 // Authentication middleware
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -78,36 +79,84 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// Admin authentication middleware
+const authenticateAdmin = (req, res, next) => {
+  const adminPassword = req.headers['x-admin-password'];
+  
+  if (!adminPassword || adminPassword !== ADMIN_PASSWORD) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+  
+  next();
+};
+
 // Routes
 
-// Register
-app.post('/api/register', async (req, res) => {
-  const { email, password } = req.body;
-  
-  try {
-    const hashedPassword = await bcrypt.hash(password, 10);
-    
-    db.run(
-      'INSERT INTO users (email, password) VALUES (?, ?)',
-      [email, hashedPassword],
-      function(err) {
-        if (err) {
-          if (err.message.includes('UNIQUE')) {
-            return res.status(400).json({ error: 'Email already exists' });
-          }
-          return res.status(500).json({ error: 'Registration failed' });
-        }
-        
-        const token = jwt.sign({ id: this.lastID, email }, JWT_SECRET);
-        res.json({ token, userId: this.lastID });
-      }
-    );
-  } catch (error) {
-    res.status(500).json({ error: 'Registration failed' });
-  }
+// Check if license key is required
+app.get('/api/license-required', (req, res) => {
+  // You can set this to false if you want to allow free registrations
+  res.json({ required: true });
 });
 
-// Login
+// Register with license key
+app.post('/api/register', async (req, res) => {
+  const { email, password, licenseKey } = req.body;
+  
+  // First check if license key is valid and unused
+  db.get(
+    'SELECT * FROM license_keys WHERE key = ? AND used = 0',
+    [licenseKey],
+    async (err, license) => {
+      if (err) {
+        return res.status(500).json({ error: 'Database error' });
+      }
+      
+      if (!license) {
+        return res.status(400).json({ error: 'Invalid or already used license key' });
+      }
+      
+      try {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        
+        // Create user
+        db.run(
+          'INSERT INTO users (email, password, license_key) VALUES (?, ?, ?)',
+          [email, hashedPassword, licenseKey],
+          function(err) {
+            if (err) {
+              if (err.message.includes('UNIQUE')) {
+                return res.status(400).json({ error: 'Email already exists' });
+              }
+              return res.status(500).json({ error: 'Registration failed' });
+            }
+            
+            const userId = this.lastID;
+            
+            // Mark license as used
+            db.run(
+              'UPDATE license_keys SET used = 1, used_at = CURRENT_TIMESTAMP, email = ? WHERE key = ?',
+              [email, licenseKey],
+              (err) => {
+                if (err) {
+                  // Rollback user creation if license update fails
+                  db.run('DELETE FROM users WHERE id = ?', [userId]);
+                  return res.status(500).json({ error: 'Failed to activate license' });
+                }
+                
+                const token = jwt.sign({ id: userId, email }, JWT_SECRET);
+                res.json({ token, userId });
+              }
+            );
+          }
+        );
+      } catch (error) {
+        res.status(500).json({ error: 'Registration failed' });
+      }
+    }
+  );
+});
+
+// Login (unchanged)
 app.post('/api/login', (req, res) => {
   const { email, password } = req.body;
   
@@ -203,6 +252,112 @@ app.delete('/api/records/:id', authenticateToken, (req, res) => {
         return res.status(404).json({ error: 'Record not found' });
       }
       res.json({ message: 'Record deleted successfully' });
+    }
+  );
+});
+
+// Admin Routes
+
+// Generate new license keys
+app.post('/api/admin/generate-keys', authenticateAdmin, (req, res) => {
+  const { count = 1, notes } = req.body;
+  const keys = [];
+  
+  const crypto = require('crypto');
+  
+  function generateLicenseKey() {
+    return crypto.randomBytes(16).toString('hex')
+      .toUpperCase()
+      .match(/.{4}/g)
+      .join('-');
+  }
+  
+  let generated = 0;
+  
+  for (let i = 0; i < count; i++) {
+    const key = generateLicenseKey();
+    
+    db.run(
+      'INSERT INTO license_keys (key, notes) VALUES (?, ?)',
+      [key, notes || null],
+      function(err) {
+        if (!err) {
+          keys.push(key);
+        }
+        
+        generated++;
+        if (generated === count) {
+          res.json({ 
+            success: true, 
+            keys,
+            message: `Generated ${keys.length} license keys`
+          });
+        }
+      }
+    );
+  }
+});
+
+// Get all license keys
+app.get('/api/admin/license-keys', authenticateAdmin, (req, res) => {
+  db.all(
+    'SELECT * FROM license_keys ORDER BY created_at DESC',
+    (err, keys) => {
+      if (err) {
+        return res.status(500).json({ error: 'Failed to fetch keys' });
+      }
+      res.json({ keys });
+    }
+  );
+});
+
+// Get all users
+app.get('/api/admin/users', authenticateAdmin, (req, res) => {
+  db.all(
+    `SELECT u.id, u.email, u.license_key, u.created_at,
+     COUNT(r.id) as record_count
+     FROM users u
+     LEFT JOIN records r ON u.id = r.user_id
+     GROUP BY u.id
+     ORDER BY u.created_at DESC`,
+    (err, users) => {
+      if (err) {
+        return res.status(500).json({ error: 'Failed to fetch users' });
+      }
+      res.json({ users });
+    }
+  );
+});
+
+// Revoke a license key
+app.post('/api/admin/revoke-license', authenticateAdmin, (req, res) => {
+  const { licenseKey } = req.body;
+  
+  db.run(
+    'UPDATE license_keys SET used = 1, notes = ? WHERE key = ?',
+    ['Revoked by admin', licenseKey],
+    function(err) {
+      if (err) {
+        return res.status(500).json({ error: 'Failed to revoke license' });
+      }
+      res.json({ success: true });
+    }
+  );
+});
+
+// Admin stats
+app.get('/api/admin/stats', authenticateAdmin, (req, res) => {
+  db.get(
+    `SELECT 
+     (SELECT COUNT(*) FROM users) as totalUsers,
+     (SELECT COUNT(*) FROM license_keys) as totalKeys,
+     (SELECT COUNT(*) FROM license_keys WHERE used = 1) as usedKeys,
+     (SELECT COUNT(*) FROM records) as totalRecords`,
+    (err, stats) => {
+      if (err) {
+        return res.status(500).json({ error: 'Failed to fetch stats' });
+      }
+      res.json(stats);
     }
   );
 });
