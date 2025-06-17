@@ -1,10 +1,11 @@
-// server.js - Rabbit Kindling Tracker with License Key System
+// server.js - Rabbit Kindling Tracker with License Key System and Persistent Database
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -16,8 +17,23 @@ app.use(express.json());
 app.use(express.static('public'));
 app.use(cors());
 
-// Database setup
-const db = new sqlite3.Database('./rabbit_tracker.db');
+// Create data directory for persistent storage
+const dataDir = process.env.RENDER ? '/opt/render/project/src/data' : './data';
+if (!fs.existsSync(dataDir)) {
+  fs.mkdirSync(dataDir, { recursive: true });
+}
+
+// Database setup with persistent path
+const dbPath = path.join(dataDir, 'rabbit_tracker.db');
+console.log('Database path:', dbPath);
+
+const db = new sqlite3.Database(dbPath, (err) => {
+  if (err) {
+    console.error('Error opening database:', err);
+  } else {
+    console.log('Connected to SQLite database successfully');
+  }
+});
 
 // Create tables
 db.serialize(() => {
@@ -102,18 +118,24 @@ app.get('/api/license-required', (req, res) => {
 app.post('/api/register', async (req, res) => {
   const { email, password, licenseKey } = req.body;
   
+  console.log('Registration attempt:', { email, licenseKey });
+  
   // First check if license key is valid and unused
   db.get(
     'SELECT * FROM license_keys WHERE key = ? AND used = 0',
     [licenseKey],
     async (err, license) => {
       if (err) {
+        console.error('Database error:', err);
         return res.status(500).json({ error: 'Database error' });
       }
       
       if (!license) {
+        console.log('License key not found or already used:', licenseKey);
         return res.status(400).json({ error: 'Invalid or already used license key' });
       }
+      
+      console.log('Valid license found:', license);
       
       try {
         const hashedPassword = await bcrypt.hash(password, 10);
@@ -124,6 +146,7 @@ app.post('/api/register', async (req, res) => {
           [email, hashedPassword, licenseKey],
           function(err) {
             if (err) {
+              console.error('Error creating user:', err);
               if (err.message.includes('UNIQUE')) {
                 return res.status(400).json({ error: 'Email already exists' });
               }
@@ -131,6 +154,7 @@ app.post('/api/register', async (req, res) => {
             }
             
             const userId = this.lastID;
+            console.log('User created with ID:', userId);
             
             // Mark license as used
             db.run(
@@ -138,11 +162,13 @@ app.post('/api/register', async (req, res) => {
               [email, licenseKey],
               (err) => {
                 if (err) {
+                  console.error('Error updating license:', err);
                   // Rollback user creation if license update fails
                   db.run('DELETE FROM users WHERE id = ?', [userId]);
                   return res.status(500).json({ error: 'Failed to activate license' });
                 }
                 
+                console.log('License marked as used');
                 const token = jwt.sign({ id: userId, email }, JWT_SECRET);
                 res.json({ token, userId });
               }
@@ -150,6 +176,7 @@ app.post('/api/register', async (req, res) => {
           }
         );
       } catch (error) {
+        console.error('Registration error:', error);
         res.status(500).json({ error: 'Registration failed' });
       }
     }
@@ -283,6 +310,9 @@ app.post('/api/admin/generate-keys', authenticateAdmin, (req, res) => {
       function(err) {
         if (!err) {
           keys.push(key);
+          console.log('Generated key:', key);
+        } else {
+          console.error('Error generating key:', err);
         }
         
         generated++;
@@ -304,8 +334,10 @@ app.get('/api/admin/license-keys', authenticateAdmin, (req, res) => {
     'SELECT * FROM license_keys ORDER BY created_at DESC',
     (err, keys) => {
       if (err) {
+        console.error('Error fetching keys:', err);
         return res.status(500).json({ error: 'Failed to fetch keys' });
       }
+      console.log(`Found ${keys.length} license keys`);
       res.json({ keys });
     }
   );
@@ -362,6 +394,20 @@ app.get('/api/admin/stats', authenticateAdmin, (req, res) => {
   );
 });
 
+// Debug route to check database
+app.get('/api/admin/debug', authenticateAdmin, (req, res) => {
+  db.all('SELECT * FROM license_keys LIMIT 10', (err, keys) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json({ 
+      dbPath: dbPath,
+      keysCount: keys.length,
+      keys: keys
+    });
+  });
+});
+
 // Serve the main app
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -369,4 +415,5 @@ app.get('*', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`Database location: ${dbPath}`);
 });
