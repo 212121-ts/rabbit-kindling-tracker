@@ -1,11 +1,10 @@
-// server.js - Rabbit Kindling Tracker with License Key System and Persistent Database
+// server.js - Rabbit Kindling Tracker with PostgreSQL Database
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
+const { Pool } = require('pg');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
-const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,67 +16,73 @@ app.use(express.json());
 app.use(express.static('public'));
 app.use(cors());
 
-// Create data directory for persistent storage
-const dataDir = process.env.RENDER ? '/opt/render/project/src/data' : './data';
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
+// PostgreSQL connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
 
-// Database setup with persistent path
-const dbPath = path.join(dataDir, 'rabbit_tracker.db');
-console.log('Database path:', dbPath);
-
-const db = new sqlite3.Database(dbPath, (err) => {
+// Test database connection
+pool.connect((err, client, release) => {
   if (err) {
-    console.error('Error opening database:', err);
+    console.error('Error connecting to database:', err.stack);
   } else {
-    console.log('Connected to SQLite database successfully');
+    console.log('Connected to PostgreSQL database');
+    release();
   }
 });
 
 // Create tables
-db.serialize(() => {
-  // Users table with license_key field
-  db.run(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email TEXT UNIQUE NOT NULL,
-      password TEXT NOT NULL,
-      license_key TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+async function initializeDatabase() {
+  try {
+    // Users table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        license_key TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
-  // License keys table
-  db.run(`
-    CREATE TABLE IF NOT EXISTS license_keys (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      key TEXT UNIQUE NOT NULL,
-      email TEXT,
-      used BOOLEAN DEFAULT 0,
-      used_at DATETIME,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      notes TEXT
-    )
-  `);
+    // License keys table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS license_keys (
+        id SERIAL PRIMARY KEY,
+        key TEXT UNIQUE NOT NULL,
+        email TEXT,
+        used BOOLEAN DEFAULT false,
+        used_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        notes TEXT
+      )
+    `);
 
-  // Records table
-  db.run(`
-    CREATE TABLE IF NOT EXISTS records (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      breeding_date DATE NOT NULL,
-      doe_name TEXT NOT NULL,
-      buck_name TEXT,
-      notes TEXT,
-      litter_size INTEGER,
-      male_count INTEGER,
-      female_count INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users (id)
-    )
-  `);
-});
+    // Records table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS records (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        breeding_date DATE NOT NULL,
+        doe_name TEXT NOT NULL,
+        buck_name TEXT,
+        notes TEXT,
+        litter_size INTEGER,
+        male_count INTEGER,
+        female_count INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    console.log('Database tables initialized');
+  } catch (err) {
+    console.error('Error initializing database:', err);
+  }
+}
+
+// Initialize database on startup
+initializeDatabase();
 
 // Authentication middleware
 const authenticateToken = (req, res, next) => {
@@ -110,7 +115,6 @@ const authenticateAdmin = (req, res, next) => {
 
 // Check if license key is required
 app.get('/api/license-required', (req, res) => {
-  // You can set this to false if you want to allow free registrations
   res.json({ required: true });
 });
 
@@ -120,108 +124,98 @@ app.post('/api/register', async (req, res) => {
   
   console.log('Registration attempt:', { email, licenseKey });
   
-  // First check if license key is valid and unused
-  db.get(
-    'SELECT * FROM license_keys WHERE key = ? AND used = 0',
-    [licenseKey],
-    async (err, license) => {
-      if (err) {
-        console.error('Database error:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
-      
-      if (!license) {
-        console.log('License key not found or already used:', licenseKey);
-        return res.status(400).json({ error: 'Invalid or already used license key' });
-      }
-      
-      console.log('Valid license found:', license);
-      
-      try {
-        const hashedPassword = await bcrypt.hash(password, 10);
-        
-        // Create user
-        db.run(
-          'INSERT INTO users (email, password, license_key) VALUES (?, ?, ?)',
-          [email, hashedPassword, licenseKey],
-          function(err) {
-            if (err) {
-              console.error('Error creating user:', err);
-              if (err.message.includes('UNIQUE')) {
-                return res.status(400).json({ error: 'Email already exists' });
-              }
-              return res.status(500).json({ error: 'Registration failed' });
-            }
-            
-            const userId = this.lastID;
-            console.log('User created with ID:', userId);
-            
-            // Mark license as used
-            db.run(
-              'UPDATE license_keys SET used = 1, used_at = CURRENT_TIMESTAMP, email = ? WHERE key = ?',
-              [email, licenseKey],
-              (err) => {
-                if (err) {
-                  console.error('Error updating license:', err);
-                  // Rollback user creation if license update fails
-                  db.run('DELETE FROM users WHERE id = ?', [userId]);
-                  return res.status(500).json({ error: 'Failed to activate license' });
-                }
-                
-                console.log('License marked as used');
-                const token = jwt.sign({ id: userId, email }, JWT_SECRET);
-                res.json({ token, userId });
-              }
-            );
-          }
-        );
-      } catch (error) {
-        console.error('Registration error:', error);
-        res.status(500).json({ error: 'Registration failed' });
-      }
+  try {
+    // Check if license key is valid and unused
+    const licenseResult = await pool.query(
+      'SELECT * FROM license_keys WHERE key = $1 AND used = false',
+      [licenseKey]
+    );
+    
+    if (licenseResult.rows.length === 0) {
+      console.log('License key not found or already used:', licenseKey);
+      return res.status(400).json({ error: 'Invalid or already used license key' });
     }
-  );
+    
+    console.log('Valid license found');
+    
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    // Create user
+    const userResult = await pool.query(
+      'INSERT INTO users (email, password, license_key) VALUES ($1, $2, $3) RETURNING id',
+      [email, hashedPassword, licenseKey]
+    );
+    
+    const userId = userResult.rows[0].id;
+    console.log('User created with ID:', userId);
+    
+    // Mark license as used
+    await pool.query(
+      'UPDATE license_keys SET used = true, used_at = CURRENT_TIMESTAMP, email = $1 WHERE key = $2',
+      [email, licenseKey]
+    );
+    
+    console.log('License marked as used');
+    
+    const token = jwt.sign({ id: userId, email }, JWT_SECRET);
+    res.json({ token, userId });
+    
+  } catch (error) {
+    console.error('Registration error:', error);
+    if (error.code === '23505') { // Unique violation
+      return res.status(400).json({ error: 'Email already exists' });
+    }
+    res.status(500).json({ error: 'Registration failed' });
+  }
 });
 
-// Login (unchanged)
-app.post('/api/login', (req, res) => {
+// Login
+app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
   
-  db.get(
-    'SELECT * FROM users WHERE email = ?',
-    [email],
-    async (err, user) => {
-      if (err || !user) {
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
-      
-      const validPassword = await bcrypt.compare(password, user.password);
-      if (!validPassword) {
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
-      
-      const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET);
-      res.json({ token, userId: user.id });
+  try {
+    const result = await pool.query(
+      'SELECT * FROM users WHERE email = $1',
+      [email]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid credentials' });
     }
-  );
+    
+    const user = result.rows[0];
+    const validPassword = await bcrypt.compare(password, user.password);
+    
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET);
+    res.json({ token, userId: user.id });
+    
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Login failed' });
+  }
 });
 
 // Get all records for user
-app.get('/api/records', authenticateToken, (req, res) => {
-  db.all(
-    'SELECT * FROM records WHERE user_id = ? ORDER BY breeding_date DESC',
-    [req.user.id],
-    (err, records) => {
-      if (err) {
-        return res.status(500).json({ error: 'Failed to fetch records' });
-      }
-      res.json({ records });
-    }
-  );
+app.get('/api/records', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM records WHERE user_id = $1 ORDER BY breeding_date DESC',
+      [req.user.id]
+    );
+    res.json({ records: result.rows });
+  } catch (error) {
+    console.error('Error fetching records:', error);
+    res.status(500).json({ error: 'Failed to fetch records' });
+  }
 });
 
 // Add new record
-app.post('/api/records', authenticateToken, (req, res) => {
+app.post('/api/records', authenticateToken, async (req, res) => {
   const {
     breeding_date,
     doe_name,
@@ -232,68 +226,71 @@ app.post('/api/records', authenticateToken, (req, res) => {
     female_count
   } = req.body;
   
-  db.run(
-    `INSERT INTO records (user_id, breeding_date, doe_name, buck_name, notes, 
-     litter_size, male_count, female_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [req.user.id, breeding_date, doe_name, buck_name, notes, 
-     litter_size, male_count, female_count],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'Failed to add record' });
-      }
-      res.json({ id: this.lastID, message: 'Record added successfully' });
-    }
-  );
+  try {
+    const result = await pool.query(
+      `INSERT INTO records (user_id, breeding_date, doe_name, buck_name, notes, 
+       litter_size, male_count, female_count) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      [req.user.id, breeding_date, doe_name, buck_name, notes, 
+       litter_size, male_count, female_count]
+    );
+    
+    res.json({ id: result.rows[0].id, message: 'Record added successfully' });
+  } catch (error) {
+    console.error('Error adding record:', error);
+    res.status(500).json({ error: 'Failed to add record' });
+  }
 });
 
 // Update record (litter info)
-app.put('/api/records/:id', authenticateToken, (req, res) => {
+app.put('/api/records/:id', authenticateToken, async (req, res) => {
   const { litter_size, male_count, female_count } = req.body;
   
-  db.run(
-    `UPDATE records SET litter_size = ?, male_count = ?, female_count = ? 
-     WHERE id = ? AND user_id = ?`,
-    [litter_size, male_count, female_count, req.params.id, req.user.id],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'Failed to update record' });
-      }
-      if (this.changes === 0) {
-        return res.status(404).json({ error: 'Record not found' });
-      }
-      res.json({ message: 'Record updated successfully' });
+  try {
+    const result = await pool.query(
+      `UPDATE records SET litter_size = $1, male_count = $2, female_count = $3 
+       WHERE id = $4 AND user_id = $5`,
+      [litter_size, male_count, female_count, req.params.id, req.user.id]
+    );
+    
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Record not found' });
     }
-  );
+    
+    res.json({ message: 'Record updated successfully' });
+  } catch (error) {
+    console.error('Error updating record:', error);
+    res.status(500).json({ error: 'Failed to update record' });
+  }
 });
 
 // Delete record
-app.delete('/api/records/:id', authenticateToken, (req, res) => {
-  db.run(
-    'DELETE FROM records WHERE id = ? AND user_id = ?',
-    [req.params.id, req.user.id],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'Failed to delete record' });
-      }
-      if (this.changes === 0) {
-        return res.status(404).json({ error: 'Record not found' });
-      }
-      res.json({ message: 'Record deleted successfully' });
+app.delete('/api/records/:id', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'DELETE FROM records WHERE id = $1 AND user_id = $2',
+      [req.params.id, req.user.id]
+    );
+    
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Record not found' });
     }
-  );
+    
+    res.json({ message: 'Record deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting record:', error);
+    res.status(500).json({ error: 'Failed to delete record' });
+  }
 });
 
 // Admin Routes
 
 // Generate new license keys
-app.post('/api/admin/generate-keys', authenticateAdmin, (req, res) => {
+app.post('/api/admin/generate-keys', authenticateAdmin, async (req, res) => {
   const { count = 1, notes } = req.body;
   const keys = [];
   
-  const crypto = require('crypto');
-  
   function generateLicenseKey() {
-    // Generate exactly 16 characters (4 groups of 4)
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let key = '';
     for (let i = 0; i < 16; i++) {
@@ -305,113 +302,117 @@ app.post('/api/admin/generate-keys', authenticateAdmin, (req, res) => {
     return key;
   }
   
-  let generated = 0;
-  
-  for (let i = 0; i < count; i++) {
-    const key = generateLicenseKey();
-    
-    db.run(
-      'INSERT INTO license_keys (key, notes) VALUES (?, ?)',
-      [key, notes || null],
-      function(err) {
-        if (!err) {
-          keys.push(key);
-          console.log('Generated key:', key);
-        } else {
-          console.error('Error generating key:', err);
-        }
-        
-        generated++;
-        if (generated === count) {
-          res.json({ 
-            success: true, 
-            keys,
-            message: `Generated ${keys.length} license keys`
-          });
-        }
+  try {
+    for (let i = 0; i < count; i++) {
+      const key = generateLicenseKey();
+      
+      try {
+        await pool.query(
+          'INSERT INTO license_keys (key, notes) VALUES ($1, $2)',
+          [key, notes || null]
+        );
+        keys.push(key);
+        console.log('Generated key:', key);
+      } catch (err) {
+        console.error('Error generating key:', err);
       }
-    );
+    }
+    
+    res.json({ 
+      success: true, 
+      keys,
+      message: `Generated ${keys.length} license keys`
+    });
+  } catch (error) {
+    console.error('Error in key generation:', error);
+    res.status(500).json({ error: 'Failed to generate keys' });
   }
 });
 
 // Get all license keys
-app.get('/api/admin/license-keys', authenticateAdmin, (req, res) => {
-  db.all(
-    'SELECT * FROM license_keys ORDER BY created_at DESC',
-    (err, keys) => {
-      if (err) {
-        console.error('Error fetching keys:', err);
-        return res.status(500).json({ error: 'Failed to fetch keys' });
-      }
-      console.log(`Found ${keys.length} license keys`);
-      res.json({ keys });
-    }
-  );
+app.get('/api/admin/license-keys', authenticateAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM license_keys ORDER BY created_at DESC'
+    );
+    console.log(`Found ${result.rows.length} license keys`);
+    res.json({ keys: result.rows });
+  } catch (error) {
+    console.error('Error fetching keys:', error);
+    res.status(500).json({ error: 'Failed to fetch keys' });
+  }
 });
 
 // Get all users
-app.get('/api/admin/users', authenticateAdmin, (req, res) => {
-  db.all(
-    `SELECT u.id, u.email, u.license_key, u.created_at,
-     COUNT(r.id) as record_count
-     FROM users u
-     LEFT JOIN records r ON u.id = r.user_id
-     GROUP BY u.id
-     ORDER BY u.created_at DESC`,
-    (err, users) => {
-      if (err) {
-        return res.status(500).json({ error: 'Failed to fetch users' });
-      }
-      res.json({ users });
-    }
-  );
+app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT u.id, u.email, u.license_key, u.created_at,
+      COUNT(r.id) as record_count
+      FROM users u
+      LEFT JOIN records r ON u.id = r.user_id
+      GROUP BY u.id
+      ORDER BY u.created_at DESC
+    `);
+    res.json({ users: result.rows });
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
 });
 
 // Revoke a license key
-app.post('/api/admin/revoke-license', authenticateAdmin, (req, res) => {
+app.post('/api/admin/revoke-license', authenticateAdmin, async (req, res) => {
   const { licenseKey } = req.body;
   
-  db.run(
-    'UPDATE license_keys SET used = 1, notes = ? WHERE key = ?',
-    ['Revoked by admin', licenseKey],
-    function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'Failed to revoke license' });
-      }
-      res.json({ success: true });
-    }
-  );
+  try {
+    await pool.query(
+      'UPDATE license_keys SET used = true, notes = $1 WHERE key = $2',
+      ['Revoked by admin', licenseKey]
+    );
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error revoking license:', error);
+    res.status(500).json({ error: 'Failed to revoke license' });
+  }
 });
 
 // Admin stats
-app.get('/api/admin/stats', authenticateAdmin, (req, res) => {
-  db.get(
-    `SELECT 
-     (SELECT COUNT(*) FROM users) as totalUsers,
-     (SELECT COUNT(*) FROM license_keys) as totalKeys,
-     (SELECT COUNT(*) FROM license_keys WHERE used = 1) as usedKeys,
-     (SELECT COUNT(*) FROM records) as totalRecords`,
-    (err, stats) => {
-      if (err) {
-        return res.status(500).json({ error: 'Failed to fetch stats' });
-      }
-      res.json(stats);
-    }
-  );
+app.get('/api/admin/stats', authenticateAdmin, async (req, res) => {
+  try {
+    const stats = {};
+    
+    const usersResult = await pool.query('SELECT COUNT(*) FROM users');
+    stats.totalUsers = parseInt(usersResult.rows[0].count);
+    
+    const keysResult = await pool.query('SELECT COUNT(*) FROM license_keys');
+    stats.totalKeys = parseInt(keysResult.rows[0].count);
+    
+    const usedKeysResult = await pool.query('SELECT COUNT(*) FROM license_keys WHERE used = true');
+    stats.usedKeys = parseInt(usedKeysResult.rows[0].count);
+    
+    const recordsResult = await pool.query('SELECT COUNT(*) FROM records');
+    stats.totalRecords = parseInt(recordsResult.rows[0].count);
+    
+    res.json(stats);
+  } catch (error) {
+    console.error('Error fetching stats:', error);
+    res.status(500).json({ error: 'Failed to fetch stats' });
+  }
 });
 
-// Debug route to check database
-app.get('/api/admin/debug', authenticateAdmin, (req, res) => {
-  db.all('SELECT * FROM license_keys LIMIT 10', (err, keys) => {
-    if (err) {
-      return res.status(500).json({ error: err.message });
-    }
+// Debug route
+app.get('/api/admin/debug', authenticateAdmin, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM license_keys LIMIT 10');
     res.json({ 
-      dbPath: dbPath,
-      keysCount: keys.length,
-      keys: keys
+      database: 'PostgreSQL',
+      keysCount: result.rows.length,
+      keys: result.rows
     });
-  });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Serve the main app
@@ -421,5 +422,5 @@ app.get('*', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Database location: ${dbPath}`);
+  console.log('Using PostgreSQL database');
 });
