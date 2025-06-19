@@ -401,17 +401,28 @@ app.get('/api/admin/stats', authenticateAdmin, async (req, res) => {
   }
 });
 
-// Debug route
-app.get('/api/admin/debug', authenticateAdmin, async (req, res) => {
+// Admin route to reset user password
+app.post('/api/admin/reset-password', authenticateAdmin, async (req, res) => {
+  const { email, newPassword } = req.body;
+  
   try {
-    const result = await pool.query('SELECT * FROM license_keys LIMIT 10');
-    res.json({ 
-      database: 'PostgreSQL',
-      keysCount: result.rows.length,
-      keys: result.rows
-    });
+    // Generate new password hash
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    // Update user's password
+    const result = await pool.query(
+      'UPDATE users SET password = $1 WHERE email = $2',
+      [hashedPassword, email]
+    );
+    
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    res.json({ success: true, message: 'Password reset successfully' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('Error resetting password:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
   }
 });
 
