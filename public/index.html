@@ -73,6 +73,20 @@
             font-size: 14px;
         }
 
+        .settings-btn {
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 5px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .settings-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
         .logout-btn {
             background: rgba(255, 255, 255, 0.2);
             border: 1px solid rgba(255, 255, 255, 0.3);
@@ -361,8 +375,15 @@
         .record-header {
             display: flex;
             justify-content: space-between;
-            align-items: center;
+            align-items: flex-start;
             margin-bottom: 10px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .record-info {
+            flex: 1;
+            min-width: 200px;
         }
 
         .record-info h4 {
@@ -377,16 +398,18 @@
 
         .record-actions {
             display: flex;
-            gap: 10px;
+            gap: 8px;
+            flex-wrap: wrap;
         }
 
         .btn-small {
-            padding: 8px 16px;
-            font-size: 14px;
+            padding: 6px 12px;
+            font-size: 13px;
             border: none;
-            border-radius: 8px;
+            border-radius: 6px;
             cursor: pointer;
             transition: all 0.3s ease;
+            white-space: nowrap;
         }
 
         .btn-view {
@@ -494,6 +517,46 @@
                 margin-top: 15px;
                 justify-content: center;
             }
+
+            /* Fix for mobile buttons */
+            .record-item {
+                padding: 12px;
+            }
+
+            .record-header {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .record-info {
+                margin-bottom: 12px;
+            }
+
+            .record-actions {
+                width: 100%;
+                display: grid;
+                grid-template-columns: 1fr 1fr 1fr;
+                gap: 5px;
+            }
+
+            .btn-small {
+                padding: 10px 5px;
+                font-size: 11px;
+                text-align: center;
+            }
+
+            /* Stack buttons vertically if still too cramped */
+            @media (max-width: 350px) {
+                .record-actions {
+                    grid-template-columns: 1fr;
+                    gap: 8px;
+                }
+                
+                .btn-small {
+                    padding: 10px;
+                    font-size: 14px;
+                }
+            }
         }
     </style>
 </head>
@@ -502,6 +565,7 @@
         <div class="header">
             <div class="user-info" id="userInfo" style="display: none;">
                 <span id="userEmail"></span>
+                <button class="settings-btn" onclick="showSettings()">⚙️ Settings</button>
                 <button class="logout-btn" onclick="logout()">Logout</button>
             </div>
             <h1><span>🐰</span> Rabbit Kindling Tracker</h1>
@@ -620,6 +684,47 @@
         </div>
     </div>
 
+    <!-- Modal for settings/password change -->
+    <div id="settingsModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span class="close" onclick="closeSettingsModal()">&times;</span>
+                <h2>Account Settings</h2>
+            </div>
+            
+            <h3 style="margin-top: 20px; color: #667eea;">Change Password</h3>
+            
+            <div class="form-group">
+                <label for="currentPassword">Current Password</label>
+                <input type="password" id="currentPassword" placeholder="Enter current password">
+            </div>
+            <div class="form-group">
+                <label for="newPasswordChange">New Password</label>
+                <input type="password" id="newPasswordChange" placeholder="Enter new password (min 6 characters)">
+            </div>
+            <div class="form-group">
+                <label for="confirmNewPassword">Confirm New Password</label>
+                <input type="password" id="confirmNewPassword" placeholder="Confirm new password">
+            </div>
+            
+            <div class="error-message" id="passwordError" style="display: none;"></div>
+            <div class="success-message" id="passwordSuccess" style="display: none;"></div>
+            
+            <div class="button-group">
+                <button class="btn-primary" onclick="changePassword()">Change Password</button>
+                <button class="btn-secondary" onclick="closeSettingsModal()">Close</button>
+            </div>
+            
+            <hr style="margin: 30px 0; border: 1px solid #eee;">
+            
+            <div style="color: #666; font-size: 14px;">
+                <p><strong>Account Information:</strong></p>
+                <p>Email: <span id="settingsEmail"></span></p>
+                <p>License Key: <span id="settingsLicense" style="font-family: monospace;"></span></p>
+            </div>
+        </div>
+    </div>
+
     <script>
         // API Configuration
         const API_URL = window.location.hostname === 'localhost' ? 'http://localhost:3000' : '';
@@ -627,6 +732,7 @@
         // State Management
         let authToken = localStorage.getItem('authToken');
         let userEmail = localStorage.getItem('userEmail');
+        let userLicenseKey = localStorage.getItem('userLicenseKey');
         let records = [];
         let currentEditingId = null;
 
@@ -713,6 +819,8 @@
                     userEmail = email;
                     localStorage.setItem('authToken', authToken);
                     localStorage.setItem('userEmail', email);
+                    // Note: In a real app, we'd fetch the license key from the server
+                    localStorage.setItem('userLicenseKey', 'LICENSE-KEY');
                     showMainApp();
                     loadRecords();
                 } else {
@@ -765,6 +873,7 @@
                     userEmail = email;
                     localStorage.setItem('authToken', authToken);
                     localStorage.setItem('userEmail', email);
+                    localStorage.setItem('userLicenseKey', licenseKey);
                     showSuccess('Account created successfully!');
                     setTimeout(() => {
                         showMainApp();
@@ -782,8 +891,10 @@
             if (confirm('Are you sure you want to logout?')) {
                 authToken = null;
                 userEmail = null;
+                userLicenseKey = null;
                 localStorage.removeItem('authToken');
                 localStorage.removeItem('userEmail');
+                localStorage.removeItem('userLicenseKey');
                 records = [];
                 showAuthForm();
                 clearForm();
@@ -1133,6 +1244,99 @@
         window.onclick = function(event) {
             if (event.target == document.getElementById('litterModal')) {
                 closeLitterModal();
+            }
+            if (event.target == document.getElementById('settingsModal')) {
+                closeSettingsModal();
+            }
+        }
+
+        // Settings Modal Functions
+        function showSettings() {
+            document.getElementById('settingsEmail').textContent = userEmail;
+            document.getElementById('settingsLicense').textContent = userLicenseKey || 'N/A';
+            document.getElementById('settingsModal').style.display = 'block';
+            
+            // Clear form
+            document.getElementById('currentPassword').value = '';
+            document.getElementById('newPasswordChange').value = '';
+            document.getElementById('confirmNewPassword').value = '';
+            document.getElementById('passwordError').style.display = 'none';
+            document.getElementById('passwordSuccess').style.display = 'none';
+        }
+
+        function closeSettingsModal() {
+            document.getElementById('settingsModal').style.display = 'none';
+        }
+
+        async function changePassword() {
+            const currentPassword = document.getElementById('currentPassword').value;
+            const newPassword = document.getElementById('newPasswordChange').value;
+            const confirmPassword = document.getElementById('confirmNewPassword').value;
+            
+            const errorDiv = document.getElementById('passwordError');
+            const successDiv = document.getElementById('passwordSuccess');
+            
+            // Hide previous messages
+            errorDiv.style.display = 'none';
+            successDiv.style.display = 'none';
+            
+            // Validation
+            if (!currentPassword || !newPassword || !confirmPassword) {
+                errorDiv.textContent = 'Please fill in all password fields';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            if (newPassword.length < 6) {
+                errorDiv.textContent = 'New password must be at least 6 characters';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            if (newPassword !== confirmPassword) {
+                errorDiv.textContent = 'New passwords do not match';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            if (currentPassword === newPassword) {
+                errorDiv.textContent = 'New password must be different from current password';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_URL}/api/change-password`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${authToken}`
+                    },
+                    body: JSON.stringify({ currentPassword, newPassword })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    successDiv.textContent = 'Password changed successfully!';
+                    successDiv.style.display = 'block';
+                    
+                    // Clear form
+                    document.getElementById('currentPassword').value = '';
+                    document.getElementById('newPasswordChange').value = '';
+                    document.getElementById('confirmNewPassword').value = '';
+                    
+                    // Close modal after 2 seconds
+                    setTimeout(() => {
+                        closeSettingsModal();
+                    }, 2000);
+                } else {
+                    errorDiv.textContent = data.error || 'Failed to change password';
+                    errorDiv.style.display = 'block';
+                }
+            } catch (error) {
+                errorDiv.textContent = 'Network error. Please try again.';
+                errorDiv.style.display = 'block';
             }
         }
 
