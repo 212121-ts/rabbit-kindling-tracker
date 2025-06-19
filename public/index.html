@@ -44,7 +44,7 @@
         .header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            padding: 30px 20px;
+            padding: 20px;
             text-align: center;
             position: relative;
         }
@@ -61,44 +61,37 @@
         .header p {
             opacity: 0.9;
             font-size: 16px;
+            margin-bottom: 0;
         }
 
         .user-info {
-            position: absolute;
-            top: 10px;
-            right: 20px;
             display: flex;
             align-items: center;
+            justify-content: center;
             gap: 10px;
             font-size: 14px;
+            margin-top: 15px;
+            flex-wrap: wrap;
         }
 
-        .settings-btn {
+        .user-email {
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .settings-btn, .logout-btn {
             background: rgba(255, 255, 255, 0.2);
             border: 1px solid rgba(255, 255, 255, 0.3);
             color: white;
-            padding: 5px 12px;
+            padding: 6px 14px;
             border-radius: 5px;
             cursor: pointer;
             transition: all 0.3s ease;
+            font-size: 13px;
         }
 
-        .settings-btn:hover {
+        .settings-btn:hover, .logout-btn:hover {
             background: rgba(255, 255, 255, 0.3);
-        }
-
-        .logout-btn {
-            background: rgba(255, 255, 255, 0.2);
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            color: white;
-            padding: 5px 12px;
-            border-radius: 5px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-
-        .logout-btn:hover {
-            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-1px);
         }
 
         .auth-container {
@@ -512,10 +505,17 @@
                 grid-template-columns: 1fr;
             }
 
+            /* Clean mobile layout for user info */
             .user-info {
-                position: static;
-                margin-top: 15px;
-                justify-content: center;
+                margin-top: 10px;
+                padding-top: 10px;
+                border-top: 1px solid rgba(255, 255, 255, 0.2);
+            }
+
+            .user-email {
+                width: 100%;
+                text-align: center;
+                margin-bottom: 8px;
             }
 
             /* Fix for mobile buttons */
@@ -563,13 +563,13 @@
 <body>
     <div class="container">
         <div class="header">
+            <h1><span>🐰</span> Rabbit Kindling Tracker</h1>
+            <p>Calculate breeding dates & track your rabbitry</p>
             <div class="user-info" id="userInfo" style="display: none;">
-                <span id="userEmail"></span>
+                <span class="user-email" id="userEmail"></span>
                 <button class="settings-btn" onclick="showSettings()">⚙️ Settings</button>
                 <button class="logout-btn" onclick="logout()">Logout</button>
             </div>
-            <h1><span>🐰</span> Rabbit Kindling Tracker</h1>
-            <p>Calculate breeding dates & track your rabbitry</p>
         </div>
 
         <!-- Authentication Section -->
