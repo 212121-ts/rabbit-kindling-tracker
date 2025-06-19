@@ -401,6 +401,43 @@ app.get('/api/admin/stats', authenticateAdmin, async (req, res) => {
   }
 });
 
+// Change password for logged-in user
+app.post('/api/change-password', authenticateToken, async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  
+  try {
+    // Get user's current password hash
+    const result = await pool.query(
+      'SELECT password FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    // Verify current password
+    const validPassword = await bcrypt.compare(currentPassword, result.rows[0].password);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+    
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    // Update password
+    await pool.query(
+      'UPDATE users SET password = $1 WHERE id = $2',
+      [hashedPassword, req.user.id]
+    );
+    
+    res.json({ success: true, message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('Error changing password:', error);
+    res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
 // Admin route to reset user password
 app.post('/api/admin/reset-password', authenticateAdmin, async (req, res) => {
   const { email, newPassword } = req.body;
