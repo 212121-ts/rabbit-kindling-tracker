@@ -1004,7 +1004,7 @@
 
             // Save the record
             saveRecord({
-                breeding_date: breedingDate,
+                breeding_date: breedingDate, // Keep as YYYY-MM-DD string
                 doe_name: doesName,
                 buck_name: buckName,
                 notes: notes
@@ -1041,13 +1041,24 @@
         }
 
         function formatDate(date) {
+            // Ensure we're working with the local date, not UTC
+            const localDate = new Date(date.getTime() + date.getTimezoneOffset() * 60000);
             const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
-            return date.toLocaleDateString('en-US', options);
+            return localDate.toLocaleDateString('en-US', options);
+        }
+
+        function formatDateForDatabase(dateString) {
+            // When saving to database, ensure we save the exact date entered
+            const date = new Date(dateString + 'T12:00:00');
+            return dateString;
         }
 
         function displayResults(dates, doesName, buckName, record = null) {
             const resultsDiv = document.getElementById('results');
             resultsDiv.style.display = 'block';
+            
+            // For the breeding date display, parse it carefully to avoid timezone issues
+            const breedingDateDisplay = new Date(dates.breeding.getFullYear(), dates.breeding.getMonth(), dates.breeding.getDate());
             
             let litterInfoHtml = '';
             if (record && (record.litter_size || record.male_count || record.female_count)) {
@@ -1076,7 +1087,7 @@
                 <div class="date-card" style="background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);">
                     <h3>🐰 Breeding Information</h3>
                     <p>${doesName} × ${buckName || 'Unknown Buck'}</p>
-                    <p class="note">Bred on ${formatDate(dates.breeding)}</p>
+                    <p class="note">Bred on ${formatDate(breedingDateDisplay)}</p>
                 </div>
 
                 ${litterInfoHtml}
@@ -1174,7 +1185,7 @@
                                     ${record.doe_name} × ${record.buck_name || 'Unknown Buck'}
                                     ${record.archived ? '<span class="archived-indicator">ARCHIVED</span>' : ''}
                                 </h4>
-                                <p>Bred: ${new Date(record.breeding_date).toLocaleDateString()}</p>
+                                <p>Bred: ${new Date(record.breeding_date + 'T12:00:00').toLocaleDateString()}</p>
                                 ${litterInfo}
                                 ${record.notes ? `<p style="font-size: 12px; font-style: italic;">${record.notes}</p>` : ''}
                             </div>
