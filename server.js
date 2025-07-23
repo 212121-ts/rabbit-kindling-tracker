@@ -77,6 +77,18 @@ async function initializeDatabase() {
       )
     `);
 
+    // Add migration to add archive columns if they don't exist
+    try {
+      await pool.query(`
+        ALTER TABLE records 
+        ADD COLUMN IF NOT EXISTS archived BOOLEAN DEFAULT false,
+        ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP
+      `);
+      console.log('Archive columns added/verified');
+    } catch (err) {
+      console.log('Archive columns already exist or migration not needed');
+    }
+
     console.log('Database tables initialized');
   } catch (err) {
     console.error('Error initializing database:', err);
