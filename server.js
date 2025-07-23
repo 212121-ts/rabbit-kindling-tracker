@@ -71,6 +71,8 @@ async function initializeDatabase() {
         litter_size INTEGER,
         male_count INTEGER,
         female_count INTEGER,
+        archived BOOLEAN DEFAULT false,
+        archived_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -200,17 +202,42 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Get all records for user
+// Get all records for user (with archive filter)
 app.get('/api/records', authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM records WHERE user_id = $1 ORDER BY breeding_date DESC',
-      [req.user.id]
-    );
+    const showArchived = req.query.archived === 'true';
+    
+    const query = showArchived 
+      ? 'SELECT * FROM records WHERE user_id = $1 AND archived = true ORDER BY breeding_date DESC'
+      : 'SELECT * FROM records WHERE user_id = $1 AND (archived = false OR archived IS NULL) ORDER BY breeding_date DESC';
+    
+    const result = await pool.query(query, [req.user.id]);
     res.json({ records: result.rows });
   } catch (error) {
     console.error('Error fetching records:', error);
     res.status(500).json({ error: 'Failed to fetch records' });
+  }
+});
+
+// Archive/Unarchive record
+app.put('/api/records/:id/archive', authenticateToken, async (req, res) => {
+  const { archive } = req.body; // true to archive, false to unarchive
+  
+  try {
+    const result = await pool.query(
+      `UPDATE records SET archived = $1, archived_at = $2 
+       WHERE id = $3 AND user_id = $4`,
+      [archive, archive ? new Date() : null, req.params.id, req.user.id]
+    );
+    
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Record not found' });
+    }
+    
+    res.json({ message: archive ? 'Record archived successfully' : 'Record restored successfully' });
+  } catch (error) {
+    console.error('Error archiving record:', error);
+    res.status(500).json({ error: 'Failed to archive record' });
   }
 });
 
