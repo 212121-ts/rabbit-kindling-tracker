@@ -1041,16 +1041,28 @@
         }
 
         function formatDate(date) {
-            // Ensure we're working with the local date, not UTC
-            const localDate = new Date(date.getTime() + date.getTimezoneOffset() * 60000);
             const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
-            return localDate.toLocaleDateString('en-US', options);
+            return date.toLocaleDateString('en-US', options);
         }
 
-        function formatDateForDatabase(dateString) {
-            // When saving to database, ensure we save the exact date entered
-            const date = new Date(dateString + 'T12:00:00');
-            return dateString;
+        function formatBreedingDate(dateString) {
+            // Handle the date string from database (YYYY-MM-DD or ISO format)
+            if (!dateString) return 'No date';
+            
+            try {
+                // If it's already a full ISO string with time, extract just the date part
+                const datePart = dateString.split('T')[0];
+                
+                // Parse the date components to avoid timezone issues
+                const [year, month, day] = datePart.split('-').map(Number);
+                const date = new Date(year, month - 1, day);
+                
+                // Return formatted date
+                return date.toLocaleDateString('en-US');
+            } catch (error) {
+                console.error('Error formatting date:', dateString, error);
+                return 'Invalid date';
+            }
         }
 
         function displayResults(dates, doesName, buckName, record = null) {
@@ -1087,7 +1099,7 @@
                 <div class="date-card" style="background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);">
                     <h3>🐰 Breeding Information</h3>
                     <p>${doesName} × ${buckName || 'Unknown Buck'}</p>
-                    <p class="note">Bred on ${formatDate(breedingDateDisplay)}</p>
+                    <p class="note">Bred on ${formatDate(dates.breeding)}</p>
                 </div>
 
                 ${litterInfoHtml}
@@ -1185,7 +1197,7 @@
                                     ${record.doe_name} × ${record.buck_name || 'Unknown Buck'}
                                     ${record.archived ? '<span class="archived-indicator">ARCHIVED</span>' : ''}
                                 </h4>
-                                <p>Bred: ${new Date(record.breeding_date + 'T12:00:00').toLocaleDateString()}</p>
+                                <p>Bred: ${formatBreedingDate(record.breeding_date)}</p>
                                 ${litterInfo}
                                 ${record.notes ? `<p style="font-size: 12px; font-style: italic;">${record.notes}</p>` : ''}
                             </div>
