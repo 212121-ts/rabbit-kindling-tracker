@@ -1217,13 +1217,16 @@
             const record = records.find(r => r.id === id);
             if (record) {
                 // Populate form
-                document.getElementById('breedingDate').value = record.breeding_date;
+                document.getElementById('breedingDate').value = record.breeding_date.split('T')[0]; // Ensure YYYY-MM-DD format
                 document.getElementById('doesName').value = record.doe_name;
                 document.getElementById('buckName').value = record.buck_name || '';
                 document.getElementById('notes').value = record.notes || '';
                 
-                // Calculate dates
-                const breed = new Date(record.breeding_date);
+                // Calculate dates - parse the date carefully
+                const datePart = record.breeding_date.split('T')[0];
+                const [year, month, day] = datePart.split('-').map(Number);
+                const breed = new Date(year, month - 1, day, 12, 0, 0);
+                
                 const dates = {
                     breeding: breed,
                     nestbox: addDays(breed, 28),
